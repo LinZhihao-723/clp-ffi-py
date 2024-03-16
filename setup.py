@@ -45,7 +45,14 @@ if "__main__" == __name__:
     try:
         if "Darwin" == platform.system():
             target: Optional[str] = os.environ.get("MACOSX_DEPLOYMENT_TARGET")
-            if None is target or float(target) < 10.15:
+            env_setup_needed: bool = False
+            if None is target:
+                env_setup_needed = True
+            else:
+                version_values: List[int] = [int(part) for part in target.split('.')]
+                if 10 >= version_values[0] and 15 >= version_values[1]:
+                    env_setup_needed = True
+            if env_setup_needed:
                 os.environ["MACOSX_DEPLOYMENT_TARGET"] = "10.15"
 
         project_name: str = "clp_ffi_py"
