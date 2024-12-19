@@ -121,7 +121,6 @@ tasks:
             - "{{.CLP_FFI_PY_CPP_SRC_DIR}}/PyObjectUtils.hpp"
             - "{{.CLP_FFI_PY_CPP_SRC_DIR}}/utils.cpp"
             - "{{.CLP_FFI_PY_CPP_SRC_DIR}}/utils.hpp"
-            - "{{.G_CPP_WRAPPED_FACADE_HEADERS_DIR}}"
           VENV_DIR: "{{.G_LINT_VENV_DIR}}"
 
   py-check:

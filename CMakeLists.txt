@@ -61,15 +61,18 @@ set(CLP_FFI_PY_WRAPPED_FACADE_HEADERS_DIR "${CLP_FFI_PY_SRC_DIR}/wrapped_facade_
 set(CLP_FFI_PY_CLP_CORE_DIR "${CLP_FFI_PY_SRC_DIR}/clp/components/core")
 
 # Add CLP's string_utils
-add_subdirectory(${CLP_FFI_PY_CLP_CORE_DIR}/src/clp/string_utils)
+add_subdirectory(${CLP_FFI_PY_CLP_CORE_DIR}/src/clp/string_utils SYSTEM)
 
 # Add GSL
-add_subdirectory(${CLP_FFI_PY_SRC_DIR}/GSL)
+add_subdirectory(${CLP_FFI_PY_SRC_DIR}/GSL SYSTEM)
 
 # Add msgpack
 set(MSGPACK_CXX20 ON CACHE BOOL "Enable C++20 in msgpack" FORCE)
 set(MSGPACK_USE_BOOST OFF CACHE BOOL "Disable Boost in msgpack" FORCE)
-add_subdirectory(${CLP_FFI_PY_SRC_DIR}/msgpack EXCLUDE_FROM_ALL)
+add_subdirectory(${CLP_FFI_PY_SRC_DIR}/msgpack EXCLUDE_FROM_ALL SYSTEM)
+
+# Add wrapped facade headers
+add_subdirectory(${CLP_FFI_PY_SRC_DIR}/wrapped_facade_headers SYSTEM)
 
 # NOTE: We don't add headers here since CLP core is technically a library we're using, not a part of
 # this project.
@@ -132,19 +135,11 @@ set(CLP_FFI_PY_LIB_IR_SOURCES
     ${CLP_FFI_PY_LIB_SRC_DIR}/utils.hpp
 )
 
-# NOTE: These headers are third-party facade headers wrapped with IWYU exports to resolve clang-tidy
-# violations for missing direct includes.
-set(CLP_FFI_PY_WRAPPED_FACADE_HEADERS
-    ${CLP_FFI_PY_WRAPPED_FACADE_HEADERS_DIR}/msgpack.hpp
-    ${CLP_FFI_PY_WRAPPED_FACADE_HEADERS_DIR}/Python.hpp
-)
-
 target_sources(
     ${CLP_FFI_PY_LIB_IR}
     PRIVATE
         ${CLP_FFI_PY_CLP_CORE_SOURCES}
         ${CLP_FFI_PY_LIB_IR_SOURCES}
-        ${CLP_FFI_PY_WRAPPED_FACADE_HEADERS}
 )
 
 # NOTE: We mark the include directories below as system headers so that the compiler (including
@@ -167,6 +162,7 @@ target_link_libraries(
     ${CLP_FFI_PY_LIB_IR}
     PRIVATE
         clp::string_utils
+        clp_ffi_py::wrapped_facade_headers
         Microsoft.GSL::GSL
         msgpack-cxx
 )

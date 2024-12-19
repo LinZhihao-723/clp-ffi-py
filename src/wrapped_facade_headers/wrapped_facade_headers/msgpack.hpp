@@ -8,7 +8,7 @@
 // IWYU pragma: begin_exports
 #include <msgpack/v3/object_decl.hpp>
 #include <msgpack/v3/object_fwd_decl.hpp>
-#include "msgpack/v3/unpack_decl.hpp"
+#include <msgpack/v3/unpack_decl.hpp>
 // IWYU pragma: end_exports
 #endif
 // clang-format on

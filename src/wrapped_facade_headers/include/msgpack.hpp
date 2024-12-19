@@ -1,0 +1,16 @@
+// IWYU pragma: begin_exports
+#include <msgpack.hpp>
+// IWYU pragma: end_exports
+
+// clang-format off
+#ifdef CLP_FFI_PY_ENABLE_LINTING
+// Inform IWYU of the headers that we use that are exported by msgpack.hpp
+// NOLINTBEGIN
+// IWYU pragma: begin_exports
+#include <msgpack/v3/object_decl.hpp>
+#include <msgpack/v3/object_fwd_decl.hpp>
+#include <msgpack/v3/unpack_decl.hpp>
+// IWYU pragma: end_exports
+// NOLINTEND
+#endif
+// clang-format on
