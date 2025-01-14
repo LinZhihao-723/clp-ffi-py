@@ -1,6 +1,8 @@
-#include <clp_ffi_py/Python.hpp>
+#include <wrapped_facade_headers/Python.hpp>
 
 #include "PyMetadata.hpp"
+
+#include <new>
 
 #include <clp_ffi_py/error_messages.hpp>
 #include <clp_ffi_py/ExceptionFFI.hpp>
@@ -139,7 +141,10 @@ PyDoc_STRVAR(
 auto PyMetadata_get_timezone(PyMetadata* self) -> PyObject* {
     auto* timezone{self->get_py_timezone()};
     if (nullptr == timezone) {
-        PyErr_SetString(PyExc_RuntimeError, clp_ffi_py::cTimezoneObjectNotInitialzed);
+        PyErr_SetString(
+                PyExc_RuntimeError,
+                get_c_str_from_constexpr_string_view(clp_ffi_py::cTimezoneObjectNotInitialized)
+        );
         return nullptr;
     }
     Py_INCREF(timezone);
@@ -225,9 +230,12 @@ auto PyMetadata::init(
         char const* input_timezone
 ) -> bool {
     // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
-    m_metadata = new Metadata(ref_timestamp, input_timestamp_format, input_timezone);
+    m_metadata = new (std::nothrow) Metadata(ref_timestamp, input_timestamp_format, input_timezone);
     if (nullptr == m_metadata) {
-        PyErr_SetString(PyExc_RuntimeError, clp_ffi_py::cOutofMemoryError);
+        PyErr_SetString(
+                PyExc_RuntimeError,
+                get_c_str_from_constexpr_string_view(clp_ffi_py::cOutOfMemoryError)
+        );
         return false;
     }
     return init_py_timezone();
@@ -236,14 +244,17 @@ auto PyMetadata::init(
 auto PyMetadata::init(nlohmann::json const& metadata, bool is_four_byte_encoding) -> bool {
     try {
         // NOLINTNEXTLINE(cppcoreguidelines-owning-memory)
-        m_metadata = new Metadata(metadata, is_four_byte_encoding);
+        m_metadata = new (std::nothrow) Metadata(metadata, is_four_byte_encoding);
+        if (nullptr == m_metadata) {
+            PyErr_SetString(
+                    PyExc_RuntimeError,
+                    get_c_str_from_constexpr_string_view(clp_ffi_py::cOutOfMemoryError)
+            );
+            return false;
+        }
     } catch (clp_ffi_py::ExceptionFFI& ex) {
         handle_traceable_exception(ex);
         m_metadata = nullptr;
-        return false;
-    }
-    if (nullptr == m_metadata) {
-        PyErr_SetString(PyExc_RuntimeError, clp_ffi_py::cOutofMemoryError);
         return false;
     }
     return init_py_timezone();

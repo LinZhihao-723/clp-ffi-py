@@ -1,7 +1,8 @@
-#include <clp_ffi_py/Python.hpp>  // Must always be included before any other header files
+#include <wrapped_facade_headers/Python.hpp>  // Must be included before any other header files
 
 #include "PyDeserializer.hpp"
 
+#include <new>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -15,6 +16,7 @@
 #include <clp/TraceableException.hpp>
 
 #include <clp_ffi_py/api_decoration.hpp>
+#include <clp_ffi_py/error_messages.hpp>
 #include <clp_ffi_py/ir/native/DeserializerBufferReader.hpp>
 #include <clp_ffi_py/ir/native/error_messages.hpp>
 #include <clp_ffi_py/ir/native/PyKeyValuePairLogEvent.hpp>
@@ -46,8 +48,8 @@ PyDoc_STRVAR(
         " treated as an error.\n"
         ":type allow_incomplete_stream: bool\n"
 );
-CLP_FFI_PY_METHOD auto
-PyDeserializer_init(PyDeserializer* self, PyObject* args, PyObject* keywords) -> int;
+CLP_FFI_PY_METHOD auto PyDeserializer_init(PyDeserializer* self, PyObject* args, PyObject* keywords)
+        -> int;
 
 /**
  * Callback of `PyDeserializer`'s `deserialize_log_event`.
@@ -70,7 +72,7 @@ CLP_FFI_PY_METHOD auto PyDeserializer_deserialize_log_event(PyDeserializer* self
  */
 CLP_FFI_PY_METHOD auto PyDeserializer_dealloc(PyDeserializer* self) -> void;
 
-// NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays)
+// NOLINTNEXTLINE(*-avoid-c-arrays, cppcoreguidelines-avoid-non-const-global-variables)
 PyMethodDef PyDeserializer_method_table[]{
         {"deserialize_log_event",
          py_c_function_cast(PyDeserializer_deserialize_log_event),
@@ -80,7 +82,8 @@ PyMethodDef PyDeserializer_method_table[]{
         {nullptr}
 };
 
-// NOLINTBEGIN(cppcoreguidelines-avoid-c-arrays, cppcoreguidelines-pro-type-*-cast)
+// NOLINTBEGIN(cppcoreguidelines-pro-type-*-cast)
+// NOLINTNEXTLINE(*-avoid-c-arrays, cppcoreguidelines-avoid-non-const-global-variables)
 PyType_Slot PyDeserializer_slots[]{
         {Py_tp_alloc, reinterpret_cast<void*>(PyType_GenericAlloc)},
         {Py_tp_dealloc, reinterpret_cast<void*>(PyDeserializer_dealloc)},
@@ -90,11 +93,12 @@ PyType_Slot PyDeserializer_slots[]{
         {Py_tp_doc, const_cast<void*>(static_cast<void const*>(cPyDeserializerDoc))},
         {0, nullptr}
 };
-// NOLINTEND(cppcoreguidelines-avoid-c-arrays, cppcoreguidelines-pro-type-*-cast)
+// NOLINTEND(cppcoreguidelines-pro-type-*-cast)
 
 /**
  * `PyDeserializer`'s Python type specifications.
  */
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 PyType_Spec PyDeserializer_type_spec{
         "clp_ffi_py.ir.native.Deserializer",
         sizeof(PyDeserializer),
@@ -103,8 +107,8 @@ PyType_Spec PyDeserializer_type_spec{
         static_cast<PyType_Slot*>(PyDeserializer_slots)
 };
 
-CLP_FFI_PY_METHOD auto
-PyDeserializer_init(PyDeserializer* self, PyObject* args, PyObject* keywords) -> int {
+CLP_FFI_PY_METHOD auto PyDeserializer_init(PyDeserializer* self, PyObject* args, PyObject* keywords)
+        -> int {
     static char keyword_input_stream[]{"input_stream"};
     static char keyword_buffer_capacity[]{"buffer_capacity"};
     static char keyword_allow_incomplete_stream[]{"allow_incomplete_stream"};
@@ -155,6 +159,16 @@ CLP_FFI_PY_METHOD auto PyDeserializer_dealloc(PyDeserializer* self) -> void {
 }
 }  // namespace
 
+auto PyDeserializer::module_level_init(PyObject* py_module) -> bool {
+    static_assert(std::is_trivially_destructible<PyDeserializer>());
+    auto* type{py_reinterpret_cast<PyTypeObject>(PyType_FromSpec(&PyDeserializer_type_spec))};
+    m_py_type.reset(type);
+    if (nullptr == type) {
+        return false;
+    }
+    return add_python_type(get_py_type(), "Deserializer", py_module);
+}
+
 auto PyDeserializer::init(
         PyObject* input_stream,
         Py_ssize_t buffer_capacity,
@@ -195,14 +209,22 @@ auto PyDeserializer::init(
         if (deserializer_result.has_error()) {
             PyErr_Format(
                     PyExc_RuntimeError,
-                    cDeserializerCreateErrorFormatStr.data(),
+                    get_c_str_from_constexpr_string_view(cDeserializerCreateErrorFormatStr),
                     deserializer_result.error().message().c_str()
             );
             return false;
         }
-        m_deserializer = new clp::ffi::ir_stream::Deserializer<PyDeserializer::IrUnitHandler>{
-                std::move(deserializer_result.value())
-        };
+        m_deserializer = new (std::nothrow)
+                clp::ffi::ir_stream::Deserializer<PyDeserializer::IrUnitHandler>{
+                        std::move(deserializer_result.value())
+                };
+        if (nullptr == m_deserializer) {
+            PyErr_SetString(
+                    PyExc_RuntimeError,
+                    get_c_str_from_constexpr_string_view(cOutOfMemoryError)
+            );
+            return false;
+        }
     } catch (clp::TraceableException& exception) {
         handle_traceable_exception(exception);
         return false;
@@ -222,7 +244,9 @@ auto PyDeserializer::deserialize_log_event() -> PyObject* {
                 if (std::errc::result_out_of_range != err) {
                     PyErr_Format(
                             PyExc_RuntimeError,
-                            cDeserializerDeserializeNextIrUnitErrorFormatStr.data(),
+                            get_c_str_from_constexpr_string_view(
+                                    cDeserializerDeserializeNextIrUnitErrorFormatStr
+                            ),
                             err.message().c_str()
                     );
                     return nullptr;
@@ -259,16 +283,6 @@ auto PyDeserializer::deserialize_log_event() -> PyObject* {
     Py_RETURN_NONE;
 }
 
-auto PyDeserializer::module_level_init(PyObject* py_module) -> bool {
-    static_assert(std::is_trivially_destructible<PyDeserializer>());
-    auto* type{py_reinterpret_cast<PyTypeObject>(PyType_FromSpec(&PyDeserializer_type_spec))};
-    m_py_type.reset(type);
-    if (nullptr == type) {
-        return false;
-    }
-    return add_python_type(get_py_type(), "Deserializer", py_module);
-}
-
 auto PyDeserializer::handle_log_event(clp::ffi::KeyValuePairLogEvent&& log_event) -> IRErrorCode {
     if (has_unreleased_deserialized_log_event()) {
         // This situation may occur if the deserializer methods return an error after the last
@@ -279,7 +293,12 @@ auto PyDeserializer::handle_log_event(clp::ffi::KeyValuePairLogEvent&& log_event
         // deserialized log event.
         clear_deserialized_log_event();
     }
-    m_deserialized_log_event = new clp::ffi::KeyValuePairLogEvent{std::move(log_event)};
+    m_deserialized_log_event
+            = new (std::nothrow) clp::ffi::KeyValuePairLogEvent{std::move(log_event)};
+    if (nullptr == m_deserialized_log_event) {
+        // TODO: Set this to a proper error code when user-defined error code is supported.
+        return IRErrorCode::IRErrorCode_Eof;
+    }
     return IRErrorCode::IRErrorCode_Success;
 }
 

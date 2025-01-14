@@ -1,0 +1,12 @@
+InheritParentConfig: true
+
+Checks:
+  # Disable vararg function checks since many CPython APIs are using varargs
+  -cppcoreguidelines-pro-type-vararg
+
+CheckOptions:
+  # Variable naming rules
+  # Allow PyObject global variables to start with `Py_`
+  readability-identifier-naming.GlobalVariableIgnoredRegexp: "Py([a-zA-Z0-9]*)(_[a-z0-9]+)+"
+  readability-identifier-naming.FunctionIgnoredRegexp: "Py([a-zA-z0-9]*)(_[a-z0-9]+)+"
+  readability-identifier-naming.GlobalFunctionIgnoredRegexp: "Py([a-zA-z0-9]*)(_[a-z0-9]+)+"

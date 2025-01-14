@@ -1,19 +1,22 @@
-#include <clp_ffi_py/Python.hpp>  // Must always be included before any other header files
+#include <wrapped_facade_headers/Python.hpp>  // Must be included before any other header files
 
 #include "DeserializerBufferReader.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <new>
 #include <span>
 
 #include <clp/ErrorCode.hpp>
 #include <clp/type_utils.hpp>
 #include <gsl/gsl>
 
+#include <clp_ffi_py/error_messages.hpp>
 #include <clp_ffi_py/ExceptionFFI.hpp>
 #include <clp_ffi_py/ir/native/PyDeserializerBuffer.hpp>
 #include <clp_ffi_py/PyObjectUtils.hpp>
+#include <clp_ffi_py/utils.hpp>
 
 namespace clp_ffi_py::ir::native {
 auto DeserializerBufferReader::create(PyObject* input_stream, Py_ssize_t buf_capacity)
@@ -24,7 +27,16 @@ auto DeserializerBufferReader::create(PyObject* input_stream, Py_ssize_t buf_cap
     if (nullptr == py_deserializer_buffer) {
         return nullptr;
     }
-    return new DeserializerBufferReader{py_deserializer_buffer.get()};
+    gsl::owner<DeserializerBufferReader*> reader{new (std::nothrow
+    ) DeserializerBufferReader{py_deserializer_buffer.get()}};
+    if (nullptr == reader) {
+        PyErr_SetString(
+                PyExc_RuntimeError,
+                get_c_str_from_constexpr_string_view(cOutOfMemoryError)
+        );
+        return nullptr;
+    }
+    return reader;
 }
 
 auto DeserializerBufferReader::try_read(char* buf, size_t num_bytes_to_read, size_t& num_bytes_read)
@@ -39,7 +51,7 @@ auto DeserializerBufferReader::try_read(char* buf, size_t num_bytes_to_read, siz
         auto const bytes_to_copy{
                 buffered_bytes_view.subspan(0, std::min(buffered_bytes_view.size(), dst_buf.size()))
         };
-        std::copy(bytes_to_copy.begin(), bytes_to_copy.end(), dst_buf.begin());
+        std::ranges::copy(bytes_to_copy.begin(), bytes_to_copy.end(), dst_buf.begin());
 
         // Commit read
         auto const num_bytes_copied{bytes_to_copy.size()};

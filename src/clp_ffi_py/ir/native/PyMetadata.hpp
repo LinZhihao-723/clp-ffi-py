@@ -1,7 +1,7 @@
 #ifndef CLP_FFI_PY_IR_NATIVE_PYMETADATA_HPP
 #define CLP_FFI_PY_IR_NATIVE_PYMETADATA_HPP
 
-#include <clp_ffi_py/Python.hpp>  // Must always be included before any other header files
+#include <wrapped_facade_headers/Python.hpp>  // Must be included before any other header files
 
 #include <json/single_include/nlohmann/json.hpp>
 
@@ -40,8 +40,8 @@ public:
      * @return true on success.
      * @return false on failure with the relevant Python exception and error set.
      */
-    [[nodiscard]] auto
-    init(nlohmann::json const& metadata, bool is_four_byte_encoding = true) -> bool;
+    [[nodiscard]] auto init(nlohmann::json const& metadata, bool is_four_byte_encoding = true)
+            -> bool;
 
     /**
      * Releases the memory allocated for underlying metadata field and the reference hold for the

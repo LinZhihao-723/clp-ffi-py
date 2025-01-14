@@ -1,14 +1,14 @@
-#include <clp_ffi_py/Python.hpp>  // Must always be included before any other header files
+#include <wrapped_facade_headers/Python.hpp>  // Must be included before any other header files
 
 #include "utils.hpp"
 
-#include <iostream>
 #include <span>
 #include <string>
+#include <string_view>
 
 #include <clp/TraceableException.hpp>
-#include <msgpack.hpp>
 #include <outcome/single-header/outcome.hpp>
+#include <wrapped_facade_headers/msgpack.hpp>
 
 #include <clp_ffi_py/ExceptionFFI.hpp>
 #include <clp_ffi_py/PyObjectCast.hpp>
@@ -32,7 +32,6 @@ auto get_py_string_data(PyObject* py_string) -> char const* {
 }  // namespace
 
 auto add_python_type(PyTypeObject* new_type, char const* type_name, PyObject* module) -> bool {
-    assert(new_type);
     if (PyType_Ready(new_type) < 0) {
         return false;
     }
@@ -56,7 +55,7 @@ auto parse_py_string_as_string_view(PyObject* py_string, std::string_view& view)
     if (nullptr == str) {
         return false;
     }
-    view = std::string_view(str);
+    view = std::string_view{str};
     return true;
 }
 
@@ -67,8 +66,8 @@ auto get_py_bool(bool is_true) -> PyObject* {
     Py_RETURN_FALSE;
 }
 
-auto unpack_msgpack(std::span<char const> msgpack_byte_sequence
-) -> outcome_v2::std_result<msgpack::object_handle, std::string> {
+auto unpack_msgpack(std::span<char const> msgpack_byte_sequence)
+        -> outcome_v2::std_result<msgpack::object_handle, std::string> {
     msgpack::object_handle handle;
     try {
         msgpack::unpack(handle, msgpack_byte_sequence.data(), msgpack_byte_sequence.size());
@@ -95,5 +94,9 @@ auto handle_traceable_exception(clp::TraceableException& exception) noexcept -> 
             static_cast<int>(exception.get_error_code()),
             exception.what()
     );
+}
+
+auto construct_py_str_from_string_view(std::string_view sv) -> PyObject* {
+    return PyUnicode_FromStringAndSize(sv.data(), static_cast<Py_ssize_t>(sv.size()));
 }
 }  // namespace clp_ffi_py

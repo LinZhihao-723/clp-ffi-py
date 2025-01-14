@@ -1,4 +1,4 @@
-#include <clp_ffi_py/Python.hpp>  // Must always be included before any other header files
+#include <wrapped_facade_headers/Python.hpp>  // Must be included before any other header files
 
 #include "deserialization_methods.hpp"
 
@@ -59,10 +59,9 @@ concept TerminateHandlerSignature = requires(TerminateHandler handler) {
  * @param nullptr if the IR stream is incomplete not allowed, with the relevant Python exceptions
  * and error set.
  */
-[[nodiscard]] auto handle_incomplete_ir_error(
-        PyDeserializerBuffer* deserializer_buffer,
-        bool allow_incomplete_stream
-) -> std::optional<PyObject*> {
+[[nodiscard]] auto
+handle_incomplete_ir_error(PyDeserializerBuffer* deserializer_buffer, bool allow_incomplete_stream)
+        -> std::optional<PyObject*> {
     if (deserializer_buffer->try_read()) {
         return std::nullopt;
     }
@@ -184,7 +183,7 @@ auto deserialize_preamble(PyObject* Py_UNUSED(self), PyObject* py_deserializer_b
                 PyObject_TypeCheck(py_deserializer_buffer, PyDeserializerBuffer::get_py_type())
         ))
     {
-        PyErr_SetString(PyExc_TypeError, cPyTypeError);
+        PyErr_SetString(PyExc_TypeError, get_c_str_from_constexpr_string_view(cPyTypeError));
         return nullptr;
     }
 
@@ -329,7 +328,7 @@ auto deserialize_next_log_event(PyObject* Py_UNUSED(self), PyObject* args, PyObj
     if (is_query_given
         && false == static_cast<bool>(PyObject_TypeCheck(query_obj, PyQuery::get_py_type())))
     {
-        PyErr_SetString(PyExc_TypeError, cPyTypeError);
+        PyErr_SetString(PyExc_TypeError, get_c_str_from_constexpr_string_view(cPyTypeError));
         return nullptr;
     }
 
