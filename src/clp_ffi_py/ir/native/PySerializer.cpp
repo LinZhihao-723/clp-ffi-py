@@ -12,11 +12,13 @@
 #include <utility>
 
 #include <clp/ffi/ir_stream/protocol_constants.hpp>
+#include <json/single_include/nlohmann/json.hpp>
 #include <wrapped_facade_headers/msgpack.hpp>
 
 #include <clp_ffi_py/api_decoration.hpp>
 #include <clp_ffi_py/error_messages.hpp>
 #include <clp_ffi_py/ir/native/error_messages.hpp>
+#include <clp_ffi_py/Py_utils.hpp>
 #include <clp_ffi_py/PyObjectCast.hpp>
 #include <clp_ffi_py/PyObjectUtils.hpp>
 #include <clp_ffi_py/utils.hpp>
@@ -32,7 +34,7 @@ PyDoc_STRVAR(
         "Serializer for serializing CLP key-value pair IR streams.\n"
         "This class serializes log events into the CLP key-value pair IR format and writes the"
         " serialized data to a specified byte stream object.\n\n"
-        "__init__(self, output_stream, buffer_size_limit=65536)\n\n"
+        "__init__(self, output_stream, buffer_size_limit=65536, user_defined_metadata=None)\n\n"
         "Initializes a :class:`Serializer` instance with the given output stream. Note that each"
         " object should only be initialized once. Double initialization will result in a memory"
         " leak.\n\n"
@@ -42,6 +44,11 @@ PyDoc_STRVAR(
         ":param buffer_size_limit: The maximum amount of serialized data to buffer before flushing"
         " it to `output_stream`. Defaults to 64 KiB.\n"
         ":type buffer_size_limit: int\n"
+        ":param user_defined_metadata: A dictionary representing user-defined stream-level"
+        " metadata, or None to indicate the absence of such metadata. If a dictionary is provided,"
+        " it must be valid for serialization as a string using the `Python Standard JSON library"
+        " <https://docs.python.org/3/library/json.html>`_\.\n"
+        ":type user_defined_metadata: dict | None\n"
 );
 CLP_FFI_PY_METHOD auto PySerializer_init(PySerializer* self, PyObject* args, PyObject* keywords)
         -> int;
@@ -52,22 +59,28 @@ CLP_FFI_PY_METHOD auto PySerializer_init(PySerializer* self, PyObject* args, PyO
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays)
 PyDoc_STRVAR(
         cPySerializerSerializeLogEventFromMsgpackMapDoc,
-        "serialize_log_event_from_msgpack_map(self, msgpack_map)\n"
+        "serialize_log_event_from_msgpack_map(self, auto_gen_msgpack_map, user_gen_msgpack_map)\n"
         "--\n\n"
-        "Serializes the given log event.\n\n"
-        ":param msgpack_map: The log event as a packed msgpack map where all keys are"
-        " strings.\n"
-        ":type msgpack_map: bytes\n"
+        "Serializes the given log event from the given packed msgpack maps.\n\n"
+        ":param auto_gen_msgpack_map: The auto-generated key-value pairs of the log event as a"
+        " packed msgpack map where all keys are strings.\n"
+        ":type auto_gen_msgpack_map: bytes\n"
+        ":param user_gen_msgpack_map: The user-generated key-value pairs of the log event as a"
+        " packed msgpack map where all keys are strings.\n"
+        ":type user_gen_msgpack_map: bytes\n"
         ":return: The number of bytes serialized.\n"
         ":rtype: int\n"
         ":raise IOError: If the serializer has already been closed.\n"
-        ":raise TypeError: If `msgpack_map` is not a packed msgpack map.\n"
-        ":raise RuntimeError: If `msgpack_map` couldn't be unpacked or serialization into the IR"
-        " stream failed.\n"
+        ":raise TypeError: If `auto_gen_msgpack_map` or `user_gen_msgpack_map` is not a packed"
+        " msgpack map.\n"
+        ":raise RuntimeError: If `auto_gen_msgpack_map` or `user_gen_msgpack_map` couldn't be"
+        " unpacked or serialization into the IR stream failed.\n"
 );
-CLP_FFI_PY_METHOD auto
-PySerializer_serialize_log_event_from_msgpack_map(PySerializer* self, PyObject* msgpack_map)
-        -> PyObject*;
+CLP_FFI_PY_METHOD auto PySerializer_serialize_log_event_from_msgpack_map(
+        PySerializer* self,
+        PyObject* args,
+        PyObject* keywords
+) -> PyObject*;
 
 /**
  * Callback of `PySerializer`'s `get_num_bytes_serialized` method.
@@ -152,7 +165,7 @@ CLP_FFI_PY_METHOD auto PySerializer_dealloc(PySerializer* self) -> void;
 PyMethodDef PySerializer_method_table[]{
         {"serialize_log_event_from_msgpack_map",
          py_c_function_cast(PySerializer_serialize_log_event_from_msgpack_map),
-         METH_O,
+         METH_VARARGS | METH_KEYWORDS,
          static_cast<char const*>(cPySerializerSerializeLogEventFromMsgpackMapDoc)},
 
         {"get_num_bytes_serialized",
@@ -212,9 +225,11 @@ CLP_FFI_PY_METHOD auto PySerializer_init(PySerializer* self, PyObject* args, PyO
         -> int {
     static char keyword_output_stream[]{"output_stream"};
     static char keyword_buffer_size_limit[]{"buffer_size_limit"};
+    static char keyword_user_defined_metadata[]{"user_defined_metadata"};
     static char* keyword_table[]{
             static_cast<char*>(keyword_output_stream),
             static_cast<char*>(keyword_buffer_size_limit),
+            static_cast<char*>(keyword_user_defined_metadata),
             nullptr
     };
 
@@ -223,15 +238,17 @@ CLP_FFI_PY_METHOD auto PySerializer_init(PySerializer* self, PyObject* args, PyO
     self->default_init();
 
     PyObject* output_stream{Py_None};
+    PyObject* py_user_defined_metadata{Py_None};
     Py_ssize_t buffer_size_limit{PySerializer::cDefaultBufferSizeLimit};
     if (false
         == static_cast<bool>(PyArg_ParseTupleAndKeywords(
                 args,
                 keywords,
-                "O|n",
+                "O|nO",
                 static_cast<char**>(keyword_table),
                 &output_stream,
-                &buffer_size_limit
+                &buffer_size_limit,
+                &py_user_defined_metadata
         )))
     {
         return -1;
@@ -270,7 +287,48 @@ CLP_FFI_PY_METHOD auto PySerializer_init(PySerializer* self, PyObject* args, PyO
         return -1;
     }
 
-    auto serializer_result{PySerializer::ClpIrSerializer::create()};
+    std::optional<nlohmann::json> optional_user_defined_metadata;
+    if (Py_None != py_user_defined_metadata) {
+        if (false == static_cast<bool>(PyDict_Check(py_user_defined_metadata))) {
+            PyErr_Format(
+                    PyExc_TypeError,
+                    "`%s` must be a dictionary, if not None.",
+                    static_cast<char const*>(keyword_user_defined_metadata)
+            );
+            return -1;
+        }
+        auto* py_serialized_json_str{py_utils_serialize_dict_to_json_str(
+                py_reinterpret_cast<PyDictObject>(py_user_defined_metadata)
+        )};
+        if (nullptr == py_serialized_json_str) {
+            return -1;
+        }
+        Py_ssize_t json_str_size{};
+        auto const* json_str_data{PyUnicode_AsUTF8AndSize(
+                py_reinterpret_cast<PyObject>(py_serialized_json_str),
+                &json_str_size
+        )};
+        if (nullptr == json_str_data) {
+            return -1;
+        }
+        auto parsed_user_defined_metadata = nlohmann::json::parse(
+                std::string_view{json_str_data, static_cast<size_t>(json_str_size)},
+                nullptr,
+                false
+        );
+        if (parsed_user_defined_metadata.is_discarded()) {
+            PyErr_Format(
+                    PyExc_RuntimeError,
+                    "Failed to parse `%s`: %s",
+                    static_cast<char const*>(keyword_user_defined_metadata),
+                    json_str_data
+            );
+            return -1;
+        }
+        optional_user_defined_metadata = std::move(parsed_user_defined_metadata);
+    }
+
+    auto serializer_result{PySerializer::ClpIrSerializer::create(optional_user_defined_metadata)};
     if (serializer_result.has_error()) {
         PyErr_Format(
                 PyExc_RuntimeError,
@@ -288,22 +346,41 @@ CLP_FFI_PY_METHOD auto PySerializer_init(PySerializer* self, PyObject* args, PyO
     return 0;
 }
 
-CLP_FFI_PY_METHOD auto
-PySerializer_serialize_log_event_from_msgpack_map(PySerializer* self, PyObject* msgpack_map)
-        -> PyObject* {
-    if (false == static_cast<bool>(PyBytes_Check(msgpack_map))) {
-        PyErr_SetString(
-                PyExc_TypeError,
-                "`msgpack_byte_sequence` is supposed to return a `bytes` object"
-        );
+CLP_FFI_PY_METHOD auto PySerializer_serialize_log_event_from_msgpack_map(
+        PySerializer* self,
+        PyObject* args,
+        PyObject* keywords
+) -> PyObject* {
+    static char keyword_auto_gen_msgpack_map[]{"auto_gen_msgpack_map"};
+    static char keyword_user_gen_msgpack_map[]{"user_gen_msgpack_map"};
+    static char* keyword_table[]{
+            static_cast<char*>(keyword_auto_gen_msgpack_map),
+            static_cast<char*>(keyword_user_gen_msgpack_map),
+            nullptr
+    };
+
+    char const* auto_gen_msgpack_map{};
+    Py_ssize_t auto_gen_msgpack_map_size{};
+    char const* user_gen_msgpack_map{};
+    Py_ssize_t user_gen_msgpack_map_size{};
+    if (false
+        == static_cast<bool>(PyArg_ParseTupleAndKeywords(
+                args,
+                keywords,
+                "y#y#",
+                static_cast<char**>(keyword_table),
+                &auto_gen_msgpack_map,
+                &auto_gen_msgpack_map_size,
+                &user_gen_msgpack_map,
+                &user_gen_msgpack_map_size
+        )))
+    {
         return nullptr;
     }
 
-    auto* py_bytes_msgpack_map{py_reinterpret_cast<PyBytesObject>(msgpack_map)};
-    // Since the type is already checked, we can use the macro to avoid duplicated type checking.
     auto const num_byte_serialized{self->serialize_log_event_from_msgpack_map(
-            {PyBytes_AS_STRING(py_bytes_msgpack_map),
-             static_cast<size_t>(PyBytes_GET_SIZE(py_bytes_msgpack_map))}
+            {auto_gen_msgpack_map, static_cast<size_t>(auto_gen_msgpack_map_size)},
+            {user_gen_msgpack_map, static_cast<size_t>(user_gen_msgpack_map_size)}
     )};
     if (false == num_byte_serialized.has_value()) {
         return nullptr;
@@ -437,27 +514,33 @@ auto PySerializer::assert_is_not_closed() const -> bool {
     return true;
 }
 
-auto PySerializer::serialize_log_event_from_msgpack_map(std::span<char const> msgpack_byte_sequence)
-        -> std::optional<Py_ssize_t> {
+auto PySerializer::serialize_log_event_from_msgpack_map(
+        std::span<char const> auto_gen_msgpack_map,
+        std::span<char const> user_gen_msgpack_map
+) -> std::optional<Py_ssize_t> {
     if (false == assert_is_not_closed()) {
         return std::nullopt;
     }
 
-    auto const unpack_result{unpack_msgpack(msgpack_byte_sequence)};
-    if (unpack_result.has_error()) {
-        PyErr_SetString(PyExc_RuntimeError, unpack_result.error().c_str());
+    auto const optional_auto_gen_msgpack_map_handle{unpack_msgpack_map(auto_gen_msgpack_map)};
+    if (false == optional_auto_gen_msgpack_map_handle.has_value()) {
         return std::nullopt;
     }
 
-    auto const& msgpack_obj{unpack_result.value().get()};
-    if (msgpack::type::MAP != msgpack_obj.type) {
-        PyErr_SetString(PyExc_TypeError, "Unpacked msgpack is not a map");
+    auto const optional_user_gen_msgpack_map_handle{unpack_msgpack_map(user_gen_msgpack_map)};
+    if (false == optional_user_gen_msgpack_map_handle.has_value()) {
         return std::nullopt;
     }
 
     auto const buffer_size_before_serialization{get_ir_buf_size()};
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
-    if (false == m_serializer->serialize_msgpack_map(msgpack_obj.via.map)) {
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    if (false
+        == m_serializer->serialize_msgpack_map(
+                optional_auto_gen_msgpack_map_handle.value().get().via.map,
+                optional_user_gen_msgpack_map_handle.value().get().via.map
+        ))
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    {
         PyErr_SetString(
                 PyExc_RuntimeError,
                 get_c_str_from_constexpr_string_view(cSerializerSerializeMsgpackMapError)

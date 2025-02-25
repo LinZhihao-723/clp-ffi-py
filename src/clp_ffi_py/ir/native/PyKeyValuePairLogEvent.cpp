@@ -3,16 +3,13 @@
 #include "PyKeyValuePairLogEvent.hpp"
 
 #include <cstddef>
-#include <cstdint>
 #include <new>
 #include <optional>
 #include <span>
-#include <stack>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 #include <clp/BufferReader.hpp>
 #include <clp/ffi/ir_stream/decoding_methods.hpp>
@@ -25,7 +22,6 @@
 #include <clp/ir/EncodedTextAst.hpp>
 #include <clp/ir/types.hpp>
 #include <clp/time_types.hpp>
-#include <clp/TraceableException.hpp>
 #include <clp/type_utils.hpp>
 #include <wrapped_facade_headers/msgpack.hpp>
 
@@ -40,7 +36,6 @@
 namespace clp_ffi_py::ir::native {
 using clp::ffi::ir_stream::IRErrorCode;
 using clp::ffi::KeyValuePairLogEvent;
-using clp::ffi::SchemaTree;
 using clp::ffi::Value;
 using clp::ir::EightByteEncodedTextAst;
 using clp::ir::FourByteEncodedTextAst;
@@ -66,6 +61,7 @@ public:
     }
 
     [[nodiscard]] static auto handle_schema_tree_node_insertion(
+            [[maybe_unused]] bool is_auto_generated,
             [[maybe_unused]] clp::ffi::SchemaTree::NodeLocator schema_tree_node_locator
     ) -> IRErrorCode {
         return IRErrorCode::IRErrorCode_Success;
@@ -81,155 +77,6 @@ public:
 };
 
 /**
- * Helper class for `PyKeyValuePairLogEvent::to_dict`.
- */
-class PyDictSerializationIterator {
-public:
-    // Factory function
-    /**
-     * Creates an iterator with the given inputs.
-     * @param schema_tree_node
-     * @param schema_subtree_bitmap
-     * @param parent
-     * @return A newly created iterator that holds a new reference of a Python dictionary on
-     * success.
-     * @return std::nullopt on failure with the relevant Python exception and error set.
-     */
-    [[nodiscard]] static auto create(
-            SchemaTree::Node const* schema_tree_node,
-            std::vector<bool> const& schema_subtree_bitmap,
-            PyDictObject* parent
-    ) -> std::optional<PyDictSerializationIterator> {
-        if (schema_tree_node->is_root() && nullptr != parent) {
-            PyErr_SetString(
-                    PyExc_RuntimeError,
-                    "KeyValuePairLogEvent.to_dict(): Root node cannot have a parent"
-            );
-            return std::nullopt;
-        }
-        if (false == schema_tree_node->is_root() && nullptr == parent) {
-            PyErr_SetString(
-                    PyExc_RuntimeError,
-                    "KeyValuePairLogEvent.to_dict(): Parent cannot be empty for non-root node"
-            );
-            return std::nullopt;
-        }
-
-        PyObjectPtr<PyDictObject> py_dict{py_reinterpret_cast<PyDictObject>(PyDict_New())};
-        if (nullptr == py_dict) {
-            return std::nullopt;
-        }
-
-        std::vector<SchemaTree::Node::id_t> child_schema_tree_nodes;
-        for (auto const child_id : schema_tree_node->get_children_ids()) {
-            if (schema_subtree_bitmap[child_id]) {
-                child_schema_tree_nodes.push_back(child_id);
-            }
-        }
-
-        return PyDictSerializationIterator{
-                schema_tree_node,
-                std::move(child_schema_tree_nodes),
-                parent,
-                std::move(py_dict)
-        };
-    }
-
-    // Delete copy constructor and assignment
-    PyDictSerializationIterator(PyDictSerializationIterator const&) = delete;
-    auto operator=(PyDictSerializationIterator const&) -> PyDictSerializationIterator& = delete;
-
-    // Default move constructor and assignment
-    PyDictSerializationIterator(PyDictSerializationIterator&&) = default;
-    auto operator=(PyDictSerializationIterator&&) -> PyDictSerializationIterator& = default;
-
-    // Destructor
-    ~PyDictSerializationIterator() = default;
-
-    /**
-     * @return Whether there are more child schema tree nodes to traverse.
-     */
-    [[nodiscard]] auto has_next_child_schema_tree_node() const -> bool {
-        return m_child_schema_tree_node_it != m_child_schema_tree_nodes.end();
-    }
-
-    /**
-     * Gets the id of the next child schema tree node and advances the iterator.
-     * @return The id of the next child schema tree node.
-     */
-    [[nodiscard]] auto get_next_child_schema_tree_node_id() -> SchemaTree::Node::id_t {
-        return *(m_child_schema_tree_node_it++);
-    }
-
-    /**
-     * Adds the underlying Python dictionary into the parent dictionary.
-     * @return true on success.
-     * @return false on failure with the relevant Python exception and error set.
-     */
-    [[nodiscard]] auto add_to_parent_dict() -> bool {
-        if (is_root()) {
-            PyErr_SetString(
-                    PyExc_RuntimeError,
-                    "KeyValuePairLogEvent.to_dict(): root has no parent to add"
-            );
-            return false;
-        }
-        PyObjectPtr<PyObject> const py_key{
-                construct_py_str_from_string_view(m_schema_tree_node->get_key_name())
-        };
-        if (nullptr == py_key) {
-            return false;
-        }
-        return 0
-               == PyDict_SetItem(
-                       py_reinterpret_cast<PyObject>(m_parent_py_dict),
-                       py_key.get(),
-                       py_reinterpret_cast<PyObject>(m_py_dict.get())
-               );
-    }
-
-    /**
-     * Releases the underlying Python dictionary as the root dictionary to return.
-     * @return The released Python dictionary on success.
-     * @return nullptr on failure with the relevant Python exception and error set.
-     */
-    [[nodiscard]] auto release_root() -> PyDictObject* {
-        if (false == is_root()) {
-            PyErr_SetString(
-                    PyExc_RuntimeError,
-                    "KeyValuePairLogEvent.to_dict(): only root can be released"
-            );
-            return nullptr;
-        }
-        return m_py_dict.release();
-    }
-
-    [[nodiscard]] auto get_py_dict() -> PyDictObject* { return m_py_dict.get(); }
-
-    [[nodiscard]] auto is_root() const -> bool { return m_schema_tree_node->is_root(); }
-
-private:
-    // Constructor
-    PyDictSerializationIterator(
-            SchemaTree::Node const* schema_tree_node,
-            std::vector<SchemaTree::Node::id_t> child_schema_tree_nodes,
-            PyDictObject* parent,
-            PyObjectPtr<PyDictObject> py_dict
-    )
-            : m_schema_tree_node{schema_tree_node},
-              m_child_schema_tree_nodes{std::move(child_schema_tree_nodes)},
-              m_child_schema_tree_node_it{m_child_schema_tree_nodes.cbegin()},
-              m_parent_py_dict{parent},
-              m_py_dict{std::move(py_dict)} {}
-
-    SchemaTree::Node const* m_schema_tree_node;
-    std::vector<SchemaTree::Node::id_t> m_child_schema_tree_nodes;
-    std::vector<SchemaTree::Node::id_t>::const_iterator m_child_schema_tree_node_it;
-    PyDictObject* m_parent_py_dict;
-    PyObjectPtr<PyDictObject> m_py_dict;
-};
-
-/**
  * Callback of `PyKeyValuePairLogEvent`'s `__init__` method.
  */
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays)
@@ -239,13 +86,18 @@ PyDoc_STRVAR(
         " key-value pairs. This class is designed to be instantiated by the IR deserializer."
         " However, direct instantiation using the `__init__` method is also supported for testing"
         " purposes, although this may not be as efficient as emission from the IR deserializer.\n\n"
-        "__init__(self, dictionary)\n\n"
+        "__init__(self, auto_gen_kv_pairs, user_gen_kv_pairs)\n\n"
         "Initializes a :class:`KeyValuePairLogEvent` from the given Python dictionary. Note that"
         " each object should only be initialized once. Double initialization will result in a"
         " memory leak.\n\n"
-        ":param dictionary: A dictionary representing the key-value pair log event, where all keys"
-        " must be strings, including keys inside any sub-dictionaries.\n"
-        ":type dictionary: dict[str, Any]\n"
+        ":param auto_gen_kv_pairs: A dictionary representing the auto-generated key-value pairs of"
+        " the given log event, where all keys must be strings, including keys inside any"
+        " sub-dictionaries.\n"
+        ":type auto_gen_kv_pairs: dict[str, Any]\n"
+        ":param user_gen_kv_pairs: A dictionary representing the user-generated key-value pairs of"
+        " the given log event, where all keys must be strings, including keys inside any"
+        " sub-dictionaries.\n"
+        ":type user_gen_kv_pairs: dict[str, Any]\n"
 );
 CLP_FFI_PY_METHOD auto
 PyKeyValuePairLogEvent_init(PyKeyValuePairLogEvent* self, PyObject* args, PyObject* keywords)
@@ -257,13 +109,29 @@ PyKeyValuePairLogEvent_init(PyKeyValuePairLogEvent* self, PyObject* args, PyObje
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays)
 PyDoc_STRVAR(
         cPyKeyValuePairLogEventToDictDoc,
-        "to_dict(self)\n"
+        "to_dict(self, encoding=\"utf-8\", errors=\"strict\")\n"
         "--\n\n"
-        "Converts the log event into a Python dictionary.\n\n"
-        ":return: The log event as a Python dictionary.\n"
-        ":rtype: dict[str, Any]\n"
+        "Converts the log event into Python dictionaries.\n\n"
+        "The `encoding` and `errors` parameters have the same meaning as the parameters of the same"
+        " name in Python's `str()` built-in function, allowing users to custom the behaviour of"
+        " converting C strings into Python Unicode objects.\n\n"
+        ":param encoding: The encoding type used to convert C strings into Python Unicode objects."
+        " See `Python Standard Encodings documentation"
+        " <https://docs.python.org/3/library/codecs.html#standard-encodings>`_ for supported"
+        " encodings.\n"
+        ":type encoding: str\n"
+        ":param errors: Specifies how decoding errors are handled. See `Python Error Handlers"
+        " documentation <https://docs.python.org/3/library/codecs.html#error-handlers>`_ for"
+        " available options.\n"
+        ":type errors: str\n"
+        ":return: A tuple of Python dictionaries:\n\n"
+        "   - A dictionary for auto-generated key-value pairs.\n"
+        "   - A dictionary for user-generated key-value pairs.\n"
+        ":rtype: tuple[dict[str, Any], dict[str, Any]]\n"
 );
-CLP_FFI_PY_METHOD auto PyKeyValuePairLogEvent_to_dict(PyKeyValuePairLogEvent* self) -> PyObject*;
+CLP_FFI_PY_METHOD auto
+PyKeyValuePairLogEvent_to_dict(PyKeyValuePairLogEvent* self, PyObject* args, PyObject* keywords)
+        -> PyObject*;
 
 /**
  * Callback of `PyKeyValuePairLogEvent`'s deallocator.
@@ -274,7 +142,7 @@ CLP_FFI_PY_METHOD auto PyKeyValuePairLogEvent_dealloc(PyKeyValuePairLogEvent* se
 PyMethodDef PyKeyValuePairLogEvent_method_table[]{
         {"to_dict",
          py_c_function_cast(PyKeyValuePairLogEvent_to_dict),
-         METH_NOARGS,
+         METH_VARARGS | METH_KEYWORDS,
          static_cast<char const*>(cPyKeyValuePairLogEventToDictDoc)},
 
         {nullptr}
@@ -313,81 +181,59 @@ PyType_Spec PyKeyValuePairLogEvent_type_spec{
  * instance. This approach is inefficient and intended solely for testing purposes, as it allows
  * instance creation without a full IR stream. TODO: Replace this method with a more efficient
  * conversion once a direct utility is available.
- * @param py_dict
+ * @param py_auto_gen_kv_pairs_dict
+ * @param py_user_gen_kv_pairs_dict
  * @return The converted key-value log event of the given dictionary on success.
  * @return std::nullopt on failure with the relevant Python exception and error set.
  */
-[[nodiscard]] auto convert_py_dict_to_key_value_pair_log_event(PyDictObject* py_dict)
-        -> std::optional<clp::ffi::KeyValuePairLogEvent>;
-
-/**
- * Serializes the given node id value pairs into a Python dictionary object.
- * @param schema_tree
- * @param schema_subtree_bitmap
- * @param node_id_value_pairs
- * @return A new reference to the serialized dictionary object on success.
- * @return nullptr on failure with the relevant Python exception and error set.
- */
-[[nodiscard]] auto serialize_node_id_value_pair_to_py_dict(
-        SchemaTree const& schema_tree,
-        std::vector<bool> const& schema_subtree_bitmap,
-        KeyValuePairLogEvent::NodeIdValuePairs const& node_id_value_pairs
-) -> PyDictObject*;
-
-/**
- * Inserts the given key-value pair into the JSON object (map).
- * @param node The schema tree node of the key to insert.
- * @param optional_val The value to insert.
- * @param dict The Python dictionary to insert the kv-pair into.
- * @return true on success.
- * @return false on failure with the relevant Python exception and error set.
- */
-[[nodiscard]] auto insert_kv_pair_into_py_dict(
-        SchemaTree::Node const& node,
-        std::optional<Value> const& optional_val,
-        PyDictObject* dict
-) -> bool;
-
-/**
- * Decodes a value as an `EncodedTextAst` according to the encoding type.
- * NOTE: This function assumes that `val` is either a `FourByteEncodedTextAst` or
- * `EightByteEncodedTextAst`.
- * @param val
- * @return true on success.
- * @return false on failure with the relevant Python exception and error set.
- */
-[[nodiscard]] auto decode_as_encoded_text_ast(Value const& val) -> std::optional<std::string>;
+[[nodiscard]] auto convert_py_dict_to_key_value_pair_log_event(
+        PyDictObject* py_auto_gen_kv_pairs_dict,
+        PyDictObject* py_user_gen_kv_pairs_dict
+) -> std::optional<clp::ffi::KeyValuePairLogEvent>;
 
 CLP_FFI_PY_METHOD auto
 PyKeyValuePairLogEvent_init(PyKeyValuePairLogEvent* self, PyObject* args, PyObject* keywords)
         -> int {
-    static char keyword_dictionary[]{"dictionary"};
-    static char* keyword_table[]{static_cast<char*>(keyword_dictionary), nullptr};
+    static char keyword_auto_gen_kv_pairs[]{"auto_gen_kv_pairs"};
+    static char keyword_user_gen_kv_pairs[]{"user_gen_kv_pairs"};
+    static char* keyword_table[]{
+            static_cast<char*>(keyword_auto_gen_kv_pairs),
+            static_cast<char*>(keyword_user_gen_kv_pairs),
+            nullptr
+    };
 
     // If the argument parsing fails, `self` will be deallocated. We must reset all pointers to
     // nullptr in advance, otherwise the deallocator might trigger segmentation fault.
     self->default_init();
 
-    PyObject* dictionary{Py_None};
+    PyObject* py_auto_gen_kv_pairs{Py_None};
+    PyObject* py_user_gen_kv_pairs{Py_None};
     if (false
         == static_cast<bool>(PyArg_ParseTupleAndKeywords(
                 args,
                 keywords,
-                "O",
+                "OO",
                 static_cast<char**>(keyword_table),
-                &dictionary
+                &py_auto_gen_kv_pairs,
+                &py_user_gen_kv_pairs
         )))
     {
         return -1;
     }
 
-    if (false == static_cast<bool>(PyDict_Check(dictionary))) {
-        PyErr_SetString(PyExc_TypeError, "`dictionary` must be a Python dictionary object");
+    if (false == static_cast<bool>(PyDict_Check(py_auto_gen_kv_pairs))) {
+        PyErr_SetString(PyExc_TypeError, "`auto_gen_kv_pairs` must be a Python dictionary object");
         return -1;
     }
-    PyDictObject* py_dict{py_reinterpret_cast<PyDictObject>(dictionary)};
+    if (false == static_cast<bool>(PyDict_Check(py_user_gen_kv_pairs))) {
+        PyErr_SetString(PyExc_TypeError, "`user_gen_kv_pairs` must be a Python dictionary object");
+        return -1;
+    }
 
-    auto optional_kv_pair_log_event{convert_py_dict_to_key_value_pair_log_event(py_dict)};
+    auto optional_kv_pair_log_event{convert_py_dict_to_key_value_pair_log_event(
+            py_reinterpret_cast<PyDictObject>(py_auto_gen_kv_pairs),
+            py_reinterpret_cast<PyDictObject>(py_user_gen_kv_pairs)
+    )};
     if (false == optional_kv_pair_log_event.has_value()) {
         return -1;
     }
@@ -395,8 +241,65 @@ PyKeyValuePairLogEvent_init(PyKeyValuePairLogEvent* self, PyObject* args, PyObje
     return self->init(std::move(optional_kv_pair_log_event.value())) ? 0 : -1;
 }
 
-CLP_FFI_PY_METHOD auto PyKeyValuePairLogEvent_to_dict(PyKeyValuePairLogEvent* self) -> PyObject* {
-    return py_reinterpret_cast<PyObject>(self->to_dict());
+CLP_FFI_PY_METHOD auto
+PyKeyValuePairLogEvent_to_dict(PyKeyValuePairLogEvent* self, PyObject* args, PyObject* keywords)
+        -> PyObject* {
+    static char keyword_encoding[]{"encoding"};
+    static char keyword_errors[]{"errors"};
+    static char* keyword_table[]{
+            static_cast<char*>(keyword_encoding),
+            static_cast<char*>(keyword_errors),
+            nullptr
+    };
+
+    constexpr std::string_view cDefaultEncoding{"utf-8"};
+    constexpr std::string_view cDefaultErrors{"strict"};
+
+    char const* encoding_c_str{cDefaultEncoding.data()};
+    Py_ssize_t encoding_size{static_cast<Py_ssize_t>(cDefaultEncoding.size())};
+    char const* errors_c_str{cDefaultErrors.data()};
+    Py_ssize_t errors_size{static_cast<Py_ssize_t>(cDefaultErrors.size())};
+    if (false
+        == static_cast<bool>(PyArg_ParseTupleAndKeywords(
+                args,
+                keywords,
+                "|s#s#",
+                static_cast<char**>(keyword_table),
+                &encoding_c_str,
+                &encoding_size,
+                &errors_c_str,
+                &errors_size
+        )))
+    {
+        return nullptr;
+    }
+
+    if (cDefaultEncoding != std::string_view{encoding_c_str, static_cast<size_t>(encoding_size)}) {
+        // The default encoding is not used
+        return self->to_dict([&](std::string_view sv) -> PyObject* {
+            return PyUnicode_Decode(
+                    sv.data(),
+                    static_cast<Py_ssize_t>(sv.size()),
+                    encoding_c_str,
+                    errors_c_str
+            );
+        });
+    }
+
+    if (cDefaultErrors != std::string_view{errors_c_str, static_cast<size_t>(errors_size)}) {
+        // The default encoding is used, but not the default error handling
+        return self->to_dict([&](std::string_view sv) -> PyObject* {
+            return PyUnicode_DecodeUTF8(
+                    sv.data(),
+                    static_cast<Py_ssize_t>(sv.size()),
+                    errors_c_str
+            );
+        });
+    }
+
+    return self->to_dict([](std::string_view sv) -> PyObject* {
+        return PyUnicode_FromStringAndSize(sv.data(), static_cast<Py_ssize_t>(sv.size()));
+    });
 }
 
 CLP_FFI_PY_METHOD auto PyKeyValuePairLogEvent_dealloc(PyKeyValuePairLogEvent* self) -> void {
@@ -404,28 +307,36 @@ CLP_FFI_PY_METHOD auto PyKeyValuePairLogEvent_dealloc(PyKeyValuePairLogEvent* se
     Py_TYPE(self)->tp_free(py_reinterpret_cast<PyObject>(self));
 }
 
-auto convert_py_dict_to_key_value_pair_log_event(PyDictObject* py_dict)
-        -> std::optional<clp::ffi::KeyValuePairLogEvent> {
-    PyObjectPtr<PyBytesObject> const serialized_msgpack_byte_sequence{
-            py_utils_serialize_dict_to_msgpack(py_dict)
+auto convert_py_dict_to_key_value_pair_log_event(
+        PyDictObject* py_auto_gen_kv_pairs_dict,
+        PyDictObject* py_user_gen_kv_pairs_dict
+) -> std::optional<clp::ffi::KeyValuePairLogEvent> {
+    PyObjectPtr<PyBytesObject> const msgpack_serialized_auto_gen_kv_pairs{
+            py_utils_serialize_dict_to_msgpack(py_auto_gen_kv_pairs_dict)
     };
-    if (nullptr == serialized_msgpack_byte_sequence) {
+    if (nullptr == msgpack_serialized_auto_gen_kv_pairs) {
+        return std::nullopt;
+    }
+    PyObjectPtr<PyBytesObject> const msgpack_serialized_user_gen_kv_pairs{
+            py_utils_serialize_dict_to_msgpack(py_user_gen_kv_pairs_dict)
+    };
+    if (nullptr == msgpack_serialized_user_gen_kv_pairs) {
         return std::nullopt;
     }
 
     // Since the type is already checked, we can use the macro to avoid duplicated type checking.
-    std::span<char const> const data_view{
-            PyBytes_AS_STRING(serialized_msgpack_byte_sequence.get()),
-            static_cast<size_t>(PyBytes_GET_SIZE(serialized_msgpack_byte_sequence.get()))
-    };
-    auto const unpack_result{unpack_msgpack(data_view)};
-    if (unpack_result.has_error()) {
-        PyErr_SetString(PyExc_RuntimeError, unpack_result.error().c_str());
+    auto const optional_auto_gen_msgpack_map_handle{unpack_msgpack_map(
+            {PyBytes_AS_STRING(msgpack_serialized_auto_gen_kv_pairs.get()),
+             static_cast<size_t>(PyBytes_GET_SIZE(msgpack_serialized_auto_gen_kv_pairs.get()))}
+    )};
+    if (false == optional_auto_gen_msgpack_map_handle.has_value()) {
         return std::nullopt;
     }
-    auto const& msgpack_obj{unpack_result.value().get()};
-    if (msgpack::type::MAP != msgpack_obj.type) {
-        PyErr_SetString(PyExc_TypeError, "Unpacked msgpack is not a map");
+    auto const optional_user_gen_msgpack_map_handle{unpack_msgpack_map(
+            {PyBytes_AS_STRING(msgpack_serialized_user_gen_kv_pairs.get()),
+             static_cast<size_t>(PyBytes_GET_SIZE(msgpack_serialized_user_gen_kv_pairs.get()))}
+    )};
+    if (false == optional_user_gen_msgpack_map_handle.has_value()) {
         return std::nullopt;
     }
 
@@ -442,8 +353,14 @@ auto convert_py_dict_to_key_value_pair_log_event(PyDictObject* py_dict)
     }
 
     auto& serializer{serializer_result.value()};
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access)
-    if (false == serializer.serialize_msgpack_map(msgpack_obj.via.map)) {
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
+    if (false
+        == serializer.serialize_msgpack_map(
+                optional_auto_gen_msgpack_map_handle.value().get().via.map,
+                optional_user_gen_msgpack_map_handle.value().get().via.map
+        ))
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    {
         PyErr_SetString(
                 PyExc_RuntimeError,
                 get_c_str_from_constexpr_string_view(cSerializerSerializeMsgpackMapError)
@@ -500,145 +417,9 @@ auto convert_py_dict_to_key_value_pair_log_event(PyDictObject* py_dict)
 
     return std::move(ir_unit_handler.log_event);
 }
+}  // namespace
 
-auto serialize_node_id_value_pair_to_py_dict(
-        SchemaTree const& schema_tree,
-        std::vector<bool> const& schema_subtree_bitmap,
-        KeyValuePairLogEvent::NodeIdValuePairs const& node_id_value_pairs
-) -> PyDictObject* {
-    PyObjectPtr<PyDictObject> root_dict;
-    using DfsIterator = PyDictSerializationIterator;
-
-    std::stack<DfsIterator> dfs_stack;
-    auto optional_root_iterator
-            = DfsIterator::create(&schema_tree.get_root(), schema_subtree_bitmap, nullptr);
-    if (false == optional_root_iterator.has_value()) {
-        return nullptr;
-    }
-    dfs_stack.emplace(std::move(optional_root_iterator.value()));
-
-    while (false == dfs_stack.empty()) {
-        auto& dfs_stack_top{dfs_stack.top()};
-        if (false == dfs_stack_top.has_next_child_schema_tree_node()) {
-            if (dfs_stack_top.is_root()) {
-                root_dict.reset(dfs_stack_top.release_root());
-            } else {
-                if (false == dfs_stack_top.add_to_parent_dict()) {
-                    return nullptr;
-                }
-            }
-            dfs_stack.pop();
-            continue;
-        }
-        auto const child_schema_tree_node_id{dfs_stack_top.get_next_child_schema_tree_node_id()};
-        auto const& child_schema_tree_node{schema_tree.get_node(child_schema_tree_node_id)};
-        if (false == node_id_value_pairs.contains(child_schema_tree_node_id)) {
-            auto optional_iterator{DfsIterator::create(
-                    &child_schema_tree_node,
-                    schema_subtree_bitmap,
-                    dfs_stack_top.get_py_dict()
-            )};
-            if (false == optional_iterator.has_value()) {
-                return nullptr;
-            }
-            dfs_stack.emplace(std::move(optional_iterator.value()));
-            continue;
-        }
-        if (false
-            == insert_kv_pair_into_py_dict(
-                    child_schema_tree_node,
-                    node_id_value_pairs.at(child_schema_tree_node_id),
-                    dfs_stack_top.get_py_dict()
-            ))
-        {
-            return nullptr;
-        }
-    }
-
-    return root_dict.release();
-}
-
-[[nodiscard]] auto insert_kv_pair_into_py_dict(
-        SchemaTree::Node const& node,
-        std::optional<Value> const& optional_val,
-        PyDictObject* dict
-) -> bool {
-    PyObjectPtr<PyObject> const py_key{construct_py_str_from_string_view(node.get_key_name())};
-    if (nullptr == py_key) {
-        return false;
-    }
-
-    if (false == optional_val.has_value()) {
-        PyObjectPtr<PyObject> const empty_dict{PyDict_New()};
-        return 0
-               == PyDict_SetItem(
-                       py_reinterpret_cast<PyObject>(dict),
-                       py_key.get(),
-                       empty_dict.get()
-               );
-    }
-
-    auto const type{node.get_type()};
-    auto const& val{optional_val.value()};
-    PyObjectPtr<PyObject> py_value;
-    switch (type) {
-        case SchemaTree::Node::Type::Int:
-            py_value.reset(PyLong_FromLongLong(val.get_immutable_view<clp::ffi::value_int_t>()));
-            break;
-        case SchemaTree::Node::Type::Float:
-            py_value.reset(PyFloat_FromDouble(val.get_immutable_view<clp::ffi::value_float_t>()));
-            break;
-        case SchemaTree::Node::Type::Bool:
-            py_value.reset(PyBool_FromLong(
-                    static_cast<long>(val.get_immutable_view<clp::ffi::value_bool_t>())
-            ));
-            break;
-        case SchemaTree::Node::Type::Str:
-            if (val.is<std::string>()) {
-                auto const val_str{val.get_immutable_view<std::string>()};
-                py_value.reset(PyUnicode_FromStringAndSize(
-                        val_str.data(),
-                        static_cast<Py_ssize_t>(val_str.size())
-                ));
-            } else {
-                auto const decoded_result{decode_as_encoded_text_ast(val)};
-                if (false == decoded_result.has_value()) {
-                    return false;
-                }
-                std::string_view const decoded_str{decoded_result.value()};
-                py_value.reset(PyUnicode_FromStringAndSize(
-                        decoded_str.data(),
-                        static_cast<Py_ssize_t>(decoded_str.size())
-                ));
-            }
-            break;
-        case SchemaTree::Node::Type::UnstructuredArray: {
-            auto const decoded_result{decode_as_encoded_text_ast(val)};
-            if (false == decoded_result.has_value()) {
-                return false;
-            }
-            py_value.reset(py_utils_parse_json_str(decoded_result.value()));
-            break;
-        }
-        case SchemaTree::Node::Type::Obj:
-            py_value.reset(Py_None);
-            break;
-        default:
-            PyErr_Format(
-                    PyExc_RuntimeError,
-                    "Unknown schema tree node type: %d",
-                    static_cast<uint32_t>(type)
-            );
-            return false;
-    }
-
-    if (nullptr == py_value) {
-        return false;
-    }
-
-    return 0 == PyDict_SetItem(py_reinterpret_cast<PyObject>(dict), py_key.get(), py_value.get());
-}
-
+namespace PyKeyValuePairLogEvent_internal {
 auto decode_as_encoded_text_ast(Value const& val) -> std::optional<std::string> {
     auto const result{
             val.is<FourByteEncodedTextAst>()
@@ -650,7 +431,7 @@ auto decode_as_encoded_text_ast(Value const& val) -> std::optional<std::string> 
     }
     return result;
 }
-}  // namespace
+}  // namespace PyKeyValuePairLogEvent_internal
 
 auto PyKeyValuePairLogEvent::create(clp::ffi::KeyValuePairLogEvent kv_log_event)
         -> PyKeyValuePairLogEvent* {
@@ -692,29 +473,5 @@ auto PyKeyValuePairLogEvent::init(clp::ffi::KeyValuePairLogEvent kv_pair_log_eve
         return false;
     }
     return true;
-}
-
-[[nodiscard]] auto PyKeyValuePairLogEvent::to_dict() -> PyDictObject* {
-    try {
-        auto const& node_id_value_pairs{m_kv_pair_log_event->get_node_id_value_pairs()};
-        auto const& schema_tree{m_kv_pair_log_event->get_schema_tree()};
-        auto const schema_subtree_bitmap_result{m_kv_pair_log_event->get_schema_subtree_bitmap()};
-        if (schema_subtree_bitmap_result.has_error()) {
-            PyErr_Format(
-                    PyExc_RuntimeError,
-                    "Failed to get schema subtree bitmap: %s",
-                    schema_subtree_bitmap_result.error().message().c_str()
-            );
-            return nullptr;
-        }
-        return serialize_node_id_value_pair_to_py_dict(
-                schema_tree,
-                schema_subtree_bitmap_result.value(),
-                node_id_value_pairs
-        );
-    } catch (clp::TraceableException& ex) {
-        handle_traceable_exception(ex);
-        return nullptr;
-    }
 }
 }  // namespace clp_ffi_py::ir::native

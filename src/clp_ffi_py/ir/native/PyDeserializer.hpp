@@ -12,6 +12,7 @@
 #include <clp/ffi/SchemaTree.hpp>
 #include <clp/time_types.hpp>
 #include <gsl/gsl>
+#include <json/single_include/nlohmann/json.hpp>
 
 #include <clp_ffi_py/ir/native/DeserializerBufferReader.hpp>
 #include <clp_ffi_py/PyObjectUtils.hpp>
@@ -109,6 +110,13 @@ public:
      */
     [[nodiscard]] auto deserialize_log_event() -> PyObject*;
 
+    /**
+     * @return A pointer to the user-defined stream-level metadata, deserialized from the stream's
+     * preamble, if defined.
+     * @return std::nullptr if the user-defined stream-level metadata is not defined.
+     */
+    [[nodiscard]] auto get_user_defined_metadata() const -> nlohmann::json const*;
+
 private:
     /**
      * Class that implements `clp::ffi::ir_stream::IrUnitHandlerInterface` for deserializing
@@ -121,9 +129,10 @@ private:
                 = std::function<clp::ffi::ir_stream::IRErrorCode(clp::ffi::KeyValuePairLogEvent&&)>;
         using UtcOffsetChangeHandle
                 = std::function<clp::ffi::ir_stream::IRErrorCode(clp::UtcOffset, clp::UtcOffset)>;
-        using SchemaTreeNodeInsertionHandle
-                = std::function<clp::ffi::ir_stream::IRErrorCode(clp::ffi::SchemaTree::NodeLocator
-                )>;
+        using SchemaTreeNodeInsertionHandle = std::function<clp::ffi::ir_stream::IRErrorCode(
+                bool is_auto_generated,
+                clp::ffi::SchemaTree::NodeLocator
+        )>;
         using EndOfStreamHandle = std::function<clp::ffi::ir_stream::IRErrorCode()>;
 
         // Constructor
@@ -162,9 +171,10 @@ private:
         }
 
         [[nodiscard]] auto handle_schema_tree_node_insertion(
+                bool is_auto_generated,
                 clp::ffi::SchemaTree::NodeLocator schema_tree_node_locator
         ) -> clp::ffi::ir_stream::IRErrorCode {
-            return m_schema_tree_node_insertion_handle(schema_tree_node_locator);
+            return m_schema_tree_node_insertion_handle(is_auto_generated, schema_tree_node_locator);
         }
 
         [[nodiscard]] auto handle_end_of_stream() -> clp::ffi::ir_stream::IRErrorCode {

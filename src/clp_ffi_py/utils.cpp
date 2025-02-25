@@ -2,9 +2,11 @@
 
 #include "utils.hpp"
 
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <clp/TraceableException.hpp>
 #include <outcome/single-header/outcome.hpp>
@@ -77,6 +79,23 @@ auto unpack_msgpack(std::span<char const> msgpack_byte_sequence)
     return handle;
 }
 
+auto unpack_msgpack_map(std::span<char const> msgpack_byte_sequence)
+        -> std::optional<msgpack::object_handle> {
+    auto unpack_result{unpack_msgpack(msgpack_byte_sequence)};
+    if (unpack_result.has_error()) {
+        PyErr_SetString(PyExc_RuntimeError, unpack_result.error().c_str());
+        return std::nullopt;
+    }
+
+    auto& msgpack_obj_handle{unpack_result.value()};
+    if (msgpack::type::MAP != msgpack_obj_handle.get().type) {
+        PyErr_SetString(PyExc_TypeError, "Unpacked msgpack is not a map");
+        return std::nullopt;
+    }
+
+    return std::move(msgpack_obj_handle);
+}
+
 auto handle_traceable_exception(clp::TraceableException& exception) noexcept -> void {
     if (auto* py_ffi_exception{dynamic_cast<ExceptionFFI*>(&exception)}) {
         auto& exception_context{py_ffi_exception->get_py_exception_context()};
@@ -98,5 +117,10 @@ auto handle_traceable_exception(clp::TraceableException& exception) noexcept -> 
 
 auto construct_py_str_from_string_view(std::string_view sv) -> PyObject* {
     return PyUnicode_FromStringAndSize(sv.data(), static_cast<Py_ssize_t>(sv.size()));
+}
+
+auto get_new_ref_to_py_none() -> PyObject* {
+    Py_INCREF(Py_None);
+    return Py_None;
 }
 }  // namespace clp_ffi_py
